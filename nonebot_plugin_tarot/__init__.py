@@ -8,11 +8,9 @@ from nonebot.plugin import PluginMetadata
 from .data_source import tarot_manager
 
 __tarot_version__ = "v0.4.0.post4"
-__tarot_usages__ = f'''
-塔罗牌 {__tarot_version__}
+__tarot_usages__ = """
 [占卜] 随机选取牌阵进行占卜
-[塔罗牌] 得到单张塔罗牌回应
-[开启/启用/关闭/禁用]群聊转发 开启或关闭全局群聊转发'''.strip()
+[塔罗牌] 得到单张塔罗牌回应""".strip()
 
 __plugin_meta__ = PluginMetadata(
     name="塔罗牌",
@@ -20,14 +18,18 @@ __plugin_meta__ = PluginMetadata(
     usage=__tarot_usages__,
     extra={
         "author": "KafCoppelia <k740677208@gmail.com>",
-        "version": __tarot_version__
-    }
+        "version": __tarot_version__,
+    },
 )
 
 divine = on_command(cmd="占卜", priority=7)
 tarot = on_command(cmd="塔罗牌", priority=7)
 chain_reply_switch = on_regex(
-    pattern=r"^(开启|启用|关闭|禁用)群聊转发(模式)?$", permission=SUPERUSER, priority=7, block=True)
+    pattern=r"^(开启|启用|关闭|禁用)群聊转发(模式)?$",
+    permission=SUPERUSER,
+    priority=7,
+    block=True,
+)
 
 
 @divine.handle()
