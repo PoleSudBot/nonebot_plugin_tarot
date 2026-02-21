@@ -9,8 +9,16 @@ from .data_source import tarot_manager
 
 __tarot_version__ = "v0.4.0.post4"
 __tarot_usages__ = """
-[占卜] 随机选取牌阵进行占卜
-[塔罗牌] 得到单张塔罗牌回应""".strip()
+## 🔮 塔罗牌
+
+- **占卜** - 随机选取牌阵进行详细占卜
+- **塔罗牌** - 抽取单张塔罗牌给予回应
+
+## ⚙️ 管理选项
+
+- **开启/关闭群聊转发** - 开启或关闭占卜结果并发转发模式 [仅超管]
+""".strip()
+
 
 __plugin_meta__ = PluginMetadata(
     name="塔罗牌",
@@ -19,6 +27,7 @@ __plugin_meta__ = PluginMetadata(
     extra={
         "author": "KafCoppelia <k740677208@gmail.com>",
         "version": __tarot_version__,
+        "menu_type": "功能",
     },
 )
 
