@@ -1,23 +1,24 @@
-from nonebot import on_command, on_regex
+import re
+
+from nonebot import on_regex
 from nonebot.adapters.onebot.v11 import Bot
 from nonebot.adapters.onebot.v11.event import GroupMessageEvent, MessageEvent
 from nonebot.matcher import Matcher
 from nonebot.permission import SUPERUSER
 from nonebot.plugin import PluginMetadata
 
-from .data_source import tarot_manager
+from .data_source import build_usage_text, tarot_manager
 
 __tarot_version__ = "v0.4.0.post4"
-__tarot_usages__ = """
-## 🔮 塔罗牌
+__tarot_usages__ = build_usage_text()
 
-- **占卜** - 随机选取牌阵进行详细占卜
-- **塔罗牌** - 抽取单张塔罗牌给予回应
+TAROT_COMMAND_PATTERN = r"^(?P<cmd>塔罗牌|抽塔罗牌)(?:\s+(?P<arg>.+?))?\s*$"
+DIVINE_COMMAND_PATTERN = (
+    r"^(?P<cmd>占卜|塔罗牌阵|抽塔罗牌阵)(?:\s+(?P<arg>.+?))?\s*$"
+)
 
-## ⚙️ 管理选项
-
-- **开启/关闭群聊转发** - 开启或关闭占卜结果并发转发模式 [仅超管]
-""".strip()
+TAROT_COMMAND_RE = re.compile(TAROT_COMMAND_PATTERN)
+DIVINE_COMMAND_RE = re.compile(DIVINE_COMMAND_PATTERN)
 
 
 __plugin_meta__ = PluginMetadata(
@@ -31,8 +32,8 @@ __plugin_meta__ = PluginMetadata(
     },
 )
 
-divine = on_command(cmd="占卜", priority=7)
-tarot = on_command(cmd="塔罗牌", priority=7)
+divine = on_regex(pattern=DIVINE_COMMAND_PATTERN, priority=7, block=True)
+tarot = on_regex(pattern=TAROT_COMMAND_PATTERN, priority=7, block=True)
 chain_reply_switch = on_regex(
     pattern=r"^(开启|启用|关闭|禁用)群聊转发(模式)?$",
     permission=SUPERUSER,
@@ -41,23 +42,24 @@ chain_reply_switch = on_regex(
 )
 
 
+def _extract_arg(text: str, command_re: re.Pattern[str]) -> str:
+    matched = command_re.fullmatch(text.strip())
+    if matched is None:
+        return ""
+
+    arg = matched.group("arg")
+    return arg.strip() if arg else ""
+
+
 @divine.handle()
 async def general_divine(bot: Bot, matcher: Matcher, event: MessageEvent):
-    arg: str = event.get_plaintext()
+    arg = _extract_arg(event.get_plaintext(), DIVINE_COMMAND_RE)
 
-    if "帮助" in arg[-2:]:
-        await matcher.finish(__tarot_usages__)
-
-    await tarot_manager.divine(bot, matcher, event)
+    await tarot_manager.divine(bot, matcher, event, formation_query=arg or None)
 
 
 @tarot.handle()
 async def _(matcher: Matcher, event: MessageEvent):
-    arg: str = event.get_plaintext()
-
-    if "帮助" in arg[-2:]:
-        await matcher.finish(__tarot_usages__)
-
     msg = await tarot_manager.onetime_divine()
     await matcher.finish(msg)
 
