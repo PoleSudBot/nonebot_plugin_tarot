@@ -7,6 +7,8 @@ from aiocache import cached
 from nonebot import logger
 from pydantic import BaseModel, Extra
 
+from zhenxun.configs.config import Config
+
 try:
     import ujson as json
 except ModuleNotFoundError:
@@ -32,6 +34,11 @@ driver = nonebot.get_driver()
 tarot_config: PluginConfig = PluginConfig.parse_obj(
     driver.config.dict(exclude_unset=True))
 
+AI_CONFIG_MODULE = "tarot"
+DEFAULT_AI_MODEL_NAME = "Gemini/gemini-3-flash-proview"
+DEFAULT_AI_DAILY_LIMIT = 1
+DEFAULT_AI_COST_GOLD = 30
+
 
 class DownloadError(Exception):
     pass
@@ -50,6 +57,35 @@ class ResourceError(Exception):
 
 class EventNotSupport(Exception):
     pass
+
+
+def get_ai_model_name() -> str:
+    return str(
+        Config.get_config(
+            AI_CONFIG_MODULE,
+            "AI_MODEL_NAME",
+            DEFAULT_AI_MODEL_NAME,
+        )
+        or DEFAULT_AI_MODEL_NAME
+    )
+
+
+def get_ai_daily_limit() -> int:
+    value = Config.get_config(
+        AI_CONFIG_MODULE,
+        "AI_DAILY_LIMIT",
+        DEFAULT_AI_DAILY_LIMIT,
+    )
+    return int(value if value is not None else DEFAULT_AI_DAILY_LIMIT)
+
+
+def get_ai_cost_gold() -> int:
+    value = Config.get_config(
+        AI_CONFIG_MODULE,
+        "AI_COST_GOLD",
+        DEFAULT_AI_COST_GOLD,
+    )
+    return int(value if value is not None else DEFAULT_AI_COST_GOLD)
 
 
 async def download_url(name: str, is_json: bool = False) -> Union[Dict[str, Any], bytes, None]:

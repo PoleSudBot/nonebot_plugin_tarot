@@ -4,7 +4,7 @@ from io import BytesIO
 from pathlib import Path
 import random
 
-from nonebot.adapters.onebot.v11 import Bot, MessageSegment
+from nonebot.adapters.onebot.v11 import Bot, Message, MessageSegment
 from nonebot.adapters.onebot.v11.event import (
     GroupMessageEvent,
     MessageEvent,
@@ -14,6 +14,7 @@ from nonebot.matcher import Matcher
 from PIL import Image
 
 from .config import EventNotSupport, ResourceError, get_tarot, tarot_config
+from .types import TarotCardDraw, TarotReading
 
 try:
     import ujson as json
@@ -29,6 +30,11 @@ class FormationSpec:
     is_cut: bool
     representations: tuple[tuple[str, ...], ...]
     suitable_for: str
+    # 预留给 LLM 的专属 System Prompt，方便未来 AI 接入
+    ai_prompt: str = (
+        "请结合用户提出的问题以及上述牌阵的各个位置和牌意，"
+        "给出客观、有启发性的详细解读。"
+    )
 
     @property
     def all_names(self) -> tuple[str, ...]:
@@ -41,19 +47,32 @@ FORMATION_SPECS: tuple[FormationSpec, ...] = (
         aliases=("圣三角", "三牌阵"),
         cards_num=3,
         is_cut=False,
-        representations=(
-            ("处境", "行动", "结果"),
-            ("现状", "愿望", "行动"),
-        ),
+        representations=(("现状与处境", "建议采取的行动", "最终可能的结果"),),
         suitable_for="通用问题、快速判断和短期建议",
+        ai_prompt=(
+            "用户正在使用【圣三角牌阵】进行占卜。请结合用户的问题，"
+            "从「现状/处境」、「对策/行动」、「未来/结果」（或根据具体牌位）三个维度进行连贯的推演分析，"
+            "并提供具有建设性和指导意义的最终建议。"
+        ),
     ),
     FormationSpec(
         name="时间之流牌阵",
         aliases=("时间之流", "时间流", "过去现在未来"),
         cards_num=4,
         is_cut=True,
-        representations=(("过去", "现在", "未来", "问卜者的主观想法"),),
+        representations=(
+            (
+                "过去的经验与起因",
+                "当下的状况与挑战",
+                "未来的发展趋势",
+                "问卜者的主观想法与潜意识",
+            ),
+        ),
         suitable_for="梳理阶段变化、查看过去现在未来的走向",
+        ai_prompt=(
+            "用户正在使用【时间之流牌阵】。请先指出切牌（主观想法）如何影响了局势，"
+            "然后按线性时间（过去 -> 现在 -> 未来）剖析事情的来龙去脉与未来走向，给出行事指引。"
+        ),
     ),
     FormationSpec(
         name="四要素牌阵",
@@ -62,29 +81,37 @@ FORMATION_SPECS: tuple[FormationSpec, ...] = (
         is_cut=False,
         representations=(
             (
-                "火，象征行动，行动上的建议",
-                "气，象征言语，言语上的对策",
-                "水，象征感情，感情上的态度",
-                "土，象征物质，物质上的准备",
+                "火：象征行动，行动上的建议",
+                "气：象征言语，沟通上的对策",
+                "水：象征感情，情感上的态度",
+                "土：象征物质，现实和物质上的准备",
             ),
         ),
         suitable_for="从行动、沟通、情绪和现实条件四个方面拆解问题",
+        ai_prompt=(
+            "用户正在使用【四要素牌阵】。请分别从火（行动方向）、气（沟通思考）、水（情感直觉）、土（物质保障）"
+            "四个独立的维度，为用户的问题提供全方位视角的拆解和对策。"
+        ),
     ),
     FormationSpec(
         name="五牌阵",
         aliases=("五牌", "五张牌阵"),
         cards_num=5,
-        is_cut=True,
+        is_cut=False,
         representations=(
             (
-                "现在或主要问题",
-                "过去的影响",
-                "未来",
-                "主要原因",
-                "行动可能带来的结果",
+                "核心症结或主要问题",
+                "过去产生的影响因素",
+                "顺其自然的发展趋势",
+                "导致现状的主要原因",
+                "采取行动可能带来的最终结果",
             ),
         ),
         suitable_for="分析成因、现状、未来与行动结果",
+        ai_prompt=(
+            "用户正在使用【五牌阵】。请重点分析“主要问题”与“主要原因”的因果关系，"
+            "并比对“顺其自然的发展趋势”与“采取行动可能带来的最终结果”，为用户指明行动的价值。"
+        ),
     ),
     FormationSpec(
         name="吉普赛十字阵",
@@ -93,14 +120,18 @@ FORMATION_SPECS: tuple[FormationSpec, ...] = (
         is_cut=False,
         representations=(
             (
-                "对方的想法",
-                "你的想法",
-                "相处中存在的问题",
-                "二人目前的环境",
-                "关系发展的结果",
+                "对方目前的想法与态度",
+                "你自己的想法与态度",
+                "两人相处中存在的客观问题",
+                "二人目前的外部环境",
+                "这段关系最终的发展结果",
             ),
         ),
         suitable_for="感情、暧昧、关系磨合与双人互动问题",
+        ai_prompt=(
+            "用户正在使用【吉普赛十字阵】占卜情感。请着重比对双方“想法与态度”的同频度，"
+            "结合“客观问题”和“外部环境”的双重阻力，预测并给出关系发展的结果及相处建议。"
+        ),
     ),
     FormationSpec(
         name="马蹄牌阵",
@@ -109,25 +140,41 @@ FORMATION_SPECS: tuple[FormationSpec, ...] = (
         is_cut=True,
         representations=(
             (
-                "现状",
-                "可预知的情况",
-                "不可预知的情况",
-                "即将发生的",
-                "结果",
-                "问卜者的主观想法",
+                "当前的现状",
+                "未来可预见的情况",
+                "未来不可预知的变数",
+                "即将发生的近期事件",
+                "最终的发展结果",
+                "问卜者内心的主观想法",
             ),
         ),
         suitable_for="查看近期走势、外部变量和短期结果",
+        ai_prompt=(
+            "用户正在使用【马蹄牌阵】。请综合分析现状，提醒用户关注“不可预知的变数”与“即将发生的事件”，"
+            "结合切牌反映出的真实态度，给出规避风险并争取最优结果的建议。"
+        ),
     ),
     FormationSpec(
         name="六芒星牌阵",
         aliases=("六芒星", "六角星"),
         cards_num=7,
-        is_cut=True,
+        is_cut=False,
         representations=(
-            ("过去", "现在", "未来", "对策", "环境", "态度", "预测结果"),
+            (
+                "过去的基础与成因",
+                "当前的实际状况",
+                "未来的自然发展趋势",
+                "给出的对策与建议",
+                "周围的外部环境与影响",
+                "问卜者的真实态度或潜意识",
+                "针对该问题的最终预测结果",
+            ),
         ),
         suitable_for="复杂问题的综合分析、对策制定与结果预测",
+        ai_prompt=(
+            "用户正在使用【六芒星牌阵】。这是一个非常全面的分析模型，分为上三角（外部时间与环境）和下三角（内部与对策）。"
+            "请统筹这些因素，梳理内外力量的碰撞，最终推导出关于事情发展方向的客观逻辑闭环与温和建议。"
+        ),
     ),
     FormationSpec(
         name="平安扇牌阵",
@@ -136,30 +183,38 @@ FORMATION_SPECS: tuple[FormationSpec, ...] = (
         is_cut=False,
         representations=(
             (
-                "人际关系现状",
-                "与对方结识的因缘",
-                "双方关系的发展",
-                "双方关系的结论",
+                "目前的人际关系现状",
+                "与对方结识的因缘或过去",
+                "双方关系未来的阶段性发展",
+                "双方关系的最终结论",
             ),
         ),
         suitable_for="朋友、同事、家人等人际关系主题",
+        ai_prompt=(
+            "用户正在使用【平安扇牌阵】。请解读这段人际关系带来的业力或缘分（因缘），结合现状与未来发展，"
+            "告诉用户在与此人相处时应抱有何种期待或划定怎样的边界。"
+        ),
     ),
     FormationSpec(
         name="沙迪若之星牌阵",
         aliases=("沙迪若之星", "沙迪若", "星牌阵"),
         cards_num=6,
-        is_cut=True,
+        is_cut=False,
         representations=(
             (
-                "问卜者的感受",
-                "问卜者的问题",
-                "问题下的影响因素",
-                "将问卜者与问题纠缠在一起的往事",
-                "需要注意/考虑的",
-                "可能的结果",
+                "问卜者在这个问题上的真实感受",
+                "问题本身的核心本质",
+                "潜藏在问题下的影响因素",
+                "将问卜者与问题纠缠在一起的过去往事",
+                "解决问题需要注意与考虑的细节",
+                "顺其自然可能导向的结果",
             ),
         ),
         suitable_for="自我梳理、情绪困扰和问题根源分析",
+        ai_prompt=(
+            "用户正在使用【沙迪若之星牌阵】。请引导用户关注自己的感受，解开“过去往事”的执念，"
+            "进而认清“问题本质”，并提供温和、治愈的心理抚慰与解脱烦恼的可行性建议。"
+        ),
     ),
     FormationSpec(
         name="凯尔特十字牌阵",
@@ -168,19 +223,23 @@ FORMATION_SPECS: tuple[FormationSpec, ...] = (
         is_cut=False,
         representations=(
             (
-                "问题核心",
-                "当前阻碍",
-                "显意识",
-                "潜意识",
-                "过去基础",
-                "近期发展",
-                "你的状态",
-                "周围环境",
-                "希望与担忧",
-                "最终结果",
+                "问题的核心状况",
+                "面临的阻碍或顺流（挑战）",
+                "显意识与理性的想法",
+                "潜意识与深层的恐惧",
+                "过去的经验与基础成因",
+                "近期的阶段性发展",
+                "问卜者自身的当前状态",
+                "周围环境的影响与他人干预",
+                "内心的希望与担忧",
+                "最终的具体结果",
             ),
         ),
         suitable_for="复杂、长期、信息量大的综合问题",
+        ai_prompt=(
+            "用户使用磅礴的【凯尔特十字牌阵】。请运用极强的逻辑分析能力，把这10张牌串联成命运演进的过程："
+            "展示核心冲突是什么，内外意识的拉扯，环境因素推波助澜，进而推导出最终结局的最可能走向。要求解读具备深度但语气保持谦逊。"
+        ),
     ),
     FormationSpec(
         name="二选一牌阵",
@@ -189,23 +248,37 @@ FORMATION_SPECS: tuple[FormationSpec, ...] = (
         is_cut=False,
         representations=(
             (
-                "方案A现状",
-                "方案A发展",
-                "方案B现状",
-                "方案B发展",
-                "你的真实倾向",
-                "综合建议",
+                "方案A目前的现状",
+                "方案A未来的发展",
+                "方案B目前的现状",
+                "方案B未来的发展",
+                "问卜者的真实偏好与潜意识倾向",
+                "最后的综合建议与指引",
             ),
         ),
         suitable_for="A/B 选择题、路线抉择和方案比较",
+        ai_prompt=(
+            "用户面临两难选择，使用了【二选一牌阵】。请将方案 A 和方案 B 的利弊、未来潜力放在天平两端对比。"
+            "结合问卜者内心的真实倾向，帮助其打破选择困难，给出清晰但留有余地的选择倾向参考。"
+        ),
     ),
     FormationSpec(
         name="身心灵牌阵",
         aliases=("身心灵", "状态牌阵", "自我探索"),
         cards_num=3,
         is_cut=False,
-        representations=(("身体状态", "心理状态", "灵性指引"),),
+        representations=(
+            (
+                "身体的健康状况与能量水平",
+                "心理的情绪状态与思维模式",
+                "灵性层面的指引与觉知",
+            ),
+        ),
         suitable_for="个人状态、自我成长、压力和恢复节奏",
+        ai_prompt=(
+            "用户使用了【身心灵牌阵】。请温柔地分析用户的劳累程度、情绪负荷与深层直觉体验，"
+            "不要只做预测，而是要重点给予指导——如何爱自己、如何调整身心磁场以获得真正的平衡。"
+        ),
     ),
     FormationSpec(
         name="关系发展牌阵",
@@ -214,16 +287,84 @@ FORMATION_SPECS: tuple[FormationSpec, ...] = (
         is_cut=False,
         representations=(
             (
-                "你的位置",
-                "对方的位置",
-                "关系现状",
-                "关系阻碍",
-                "未来发展",
+                "你在关系中的位置与状态",
+                "对方在关系中的位置与状态",
+                "你们目前的关系现状",
+                "发展中将面临的阻碍",
+                "关系未来的发展趋势",
             ),
         ),
         suitable_for="感情、合作、人际互动与关系走向",
+        ai_prompt=(
+            "用户询问关系未来发展，使用了【关系发展牌阵】。请剖析双方供求关系（双方地位、心态是否对等），"
+            "指出现状的张力及潜在的“阻碍”，并为跨越阻碍、达成良性终局提出切实可行的建议。"
+        ),
+    ),
+    FormationSpec(
+        name="爱情金字塔牌阵",
+        aliases=("爱情金字塔", "感情金字塔"),
+        cards_num=4,
+        is_cut=False,
+        representations=(
+            (
+                "你对这段感情的真实想法与态度",
+                "对方对这段感情的想法与态度",
+                "你们目前的情感现状与互动表现",
+                "这段关系未来的关键发展及预测",
+            ),
+        ),
+        suitable_for="短期感情走势、两人关系现状及未来发展",
+        ai_prompt=(
+            "用户使用【爱情金字塔牌阵】探测感情状态。请先评估基石（即双方当下的态度和现状）是否结实稳固，"
+            "进而推演顶部的“未来发展预测”。若一方态度消极，应如何破局？请给予清晰的建设性指导。"
+        ),
+    ),
+    FormationSpec(
+        name="一周运势牌阵",
+        aliases=("一周运势", "周运牌阵", "周运"),
+        cards_num=7,
+        is_cut=False,
+        representations=(
+            (
+                "周一的运势与主要能量",
+                "周二的运势与指引",
+                "周三的运势与指引",
+                "周四的运势与指引",
+                "周五的运势与指引",
+                "周六的周末开端状态",
+                "周日的放松与总结建议",
+            ),
+        ),
+        suitable_for="预测未来一周每天的基本运势走势",
+        ai_prompt=(
+            "用户希望通过【一周运势牌阵】查看未来七天运势。请概述整周运势的大致起伏节奏，然后分别提炼出每天的关键事件或情绪点"
+            "（例如哪天有挑战，哪天适合顺势而为），统合牌意给出整体的开运寄语。"
+        ),
+    ),
+    FormationSpec(
+        name="灵感对应牌阵",
+        aliases=("灵感对应", "双方内心", "心迹牌阵"),
+        cards_num=6,
+        is_cut=False,
+        representations=(
+            (
+                "你对这段关系的真实看法与评价",
+                "对方对这段关系的真实看法与评价",
+                "你认为对方目前处于什么状态",
+                "对方认为你目前处于什么状态",
+                "你在关系中对未来的期盼或恐惧",
+                "对方在关系中对未来的期盼或恐惧",
+            ),
+        ),
+        suitable_for="深入剖析双方的心理状态、认知差异和真实渴望",
+        ai_prompt=(
+            "用户使用【灵感对应牌阵】。此牌阵意在寻找认知偏差：你以为的TA，是不是真实的TA？"
+            "请通过互相映射的牌位比对两人是否存在信息差、对未来的期待是否一致，然后给出最深刻、透彻的心理学级别洞察分析。"
+        ),
     ),
 )
+
+DEFAULT_AI_FORMATION_NAME = "圣三角牌阵"
 
 
 def normalize_formation_name(name: str) -> str:
@@ -255,6 +396,13 @@ def get_formation(query: str) -> FormationSpec | None:
     return FORMATION_ALIAS_MAP.get(normalized)
 
 
+def get_default_ai_formation() -> FormationSpec:
+    formation = get_formation(DEFAULT_AI_FORMATION_NAME)
+    if formation is None:
+        raise ResourceError(f"默认AI牌阵 {DEFAULT_AI_FORMATION_NAME} 未配置")
+    return formation
+
+
 def _format_aliases(formation: FormationSpec) -> str:
     return "、".join(formation.aliases)
 
@@ -263,21 +411,28 @@ def format_formation_catalog() -> str:
     lines = []
     for formation in FORMATION_SPECS:
         lines.append(
-            f"- **{formation.name}**（别名：{_format_aliases(formation)}）  \n"
-            f"  适合：{formation.suitable_for}"
+            f"- `{formation.name}`：{formation.suitable_for}  \n"
+            f"  别名：{_format_aliases(formation)}"
         )
     return "\n".join(lines)
 
 
-def build_unknown_formation_message(query: str) -> str:
+def build_unknown_formation_markdown(query: str) -> str:
     normalized = normalize_formation_name(query)
     return "\n".join(
         [
-            f"未找到牌阵「{normalized}」",
-            "可用牌阵如下：",
+            f"## 未找到牌阵 `{normalized}`",
+            "",
+            "### 可用牌阵",
             format_formation_catalog(),
-            "示例：占卜 圣三角牌阵",
-            "示例：塔罗牌阵 凯尔特十字",
+            "",
+            "### 使用示例",
+            "- `占卜 圣三角`",
+            "- `塔罗牌阵 凯尔特十字`",
+            "- `占卜 圣三角 【我马上要考试了，会怎么样】`",
+            "- `塔罗牌 【考试的结果】`",
+            "",
+            "AI 模式未指定牌阵时，会默认使用 `圣三角牌阵`。",
         ]
     )
 
@@ -285,47 +440,53 @@ def build_unknown_formation_message(query: str) -> str:
 def build_usage_text() -> str:
     return "\n".join(
         [
-            "## 🔮 塔罗牌",
+            "## 塔罗牌",
             "",
-            "- **占卜**  ",
-            "  随机选取牌阵进行详细占卜",
-            "- **占卜 <牌阵名>**  ",
-            "  使用指定牌阵占卜",
-            "- **塔罗牌 / 抽塔罗牌**  ",
-            "  抽取单张塔罗牌给予回应",
-            "- **塔罗牌阵 <牌阵名> / 抽塔罗牌阵 <牌阵名>**  ",
-            "  使用指定牌阵占卜",
-            "",
-            "## 🧭 使用示例",
-            "",
+            "### 普通模式",
             "- `塔罗牌`",
             "- `抽塔罗牌`",
             "- `占卜`",
-            "- `占卜 圣三角`",
-            "- `塔罗牌阵 凯尔特十字`",
-            "- `抽塔罗牌阵 二选一`",
+            "- `占卜 <牌阵名>`",
+            "- `塔罗牌阵 <牌阵名>`",
+            "- `抽塔罗牌阵 <牌阵名>`",
             "",
-            "## 🃏 牌阵说明",
+            "### AI 模式",
+            "- `占卜 【问题】`",
+            "- `占卜 <牌阵名> 【问题】`",
+            "- `塔罗牌 【问题】`",
+            "- `抽塔罗牌 【问题】`",
+            "- `塔罗牌阵 <牌阵名> 【问题】`",
+            "- `抽塔罗牌阵 <牌阵名> 【问题】`",
+            "",
+            "AI 模式未指定牌阵时，默认使用 `圣三角牌阵`。",
+            "",
+            "### 使用示例",
+            "- `占卜 圣三角`",
+            "- `占卜 【我马上要考试了，会怎么样】`",
+            "- `塔罗牌 【考试的结果】`",
+            "- `占卜 凯尔特十字 【这段关系会怎么发展】`",
+            "",
+            "### 牌阵说明",
             "",
             format_formation_catalog(),
             "",
-            "## ⚙️ 管理选项",
+            "### 管理选项",
             "",
-            "- **开启/关闭群聊转发**  ",
-            "  开启或关闭占卜结果并发转发模式 [仅超管]",
+            "- `开启群聊转发` / `关闭群聊转发`：切换群聊合并转发模式",
         ]
     ).strip()
 
 
 def chain_reply(
     bot: Bot,
-    chain: list[dict[str, str | dict[str, str | MessageSegment]]],
-    msg: MessageSegment,
-) -> list[dict[str, str | dict[str, str | MessageSegment]]]:
+    chain: list[dict[str, str | dict[str, str | Message | MessageSegment]]],
+    msg: Message | MessageSegment,
+) -> list[dict[str, str | dict[str, str | Message | MessageSegment]]]:
+    name = next(iter(tarot_config.nickname), "Tarot")
     data = {
         "type": "node",
         "data": {
-            "name": next(iter(tarot_config.nickname)),
+            "name": name,
             "uin": bot.self_id,
             "content": msg,
         },
@@ -391,74 +552,66 @@ class Tarot:
     ) -> None:
         """
         General tarot divination.
-        1. Choose a theme
-        2. Pick a specific formation or choose one randomly
-        3. Get the divined cards list and their text
-        4. Generate message (or chain reply if enabled)
         """
-        theme: str = pick_theme()
-        all_cards = self._load_cards()
-
         if formation_query:
             formation = get_formation(formation_query)
             if formation is None:
-                await matcher.finish(build_unknown_formation_message(formation_query))
+                raise ResourceError(f"未找到牌阵：{formation_query}")
         else:
             formation = random.choice(FORMATION_SPECS)
 
         await matcher.send(f"启用{formation.name}，正在洗牌中")
-
-        cards_num = formation.cards_num
-        cards_info_list = self._random_cards(all_cards, theme, cards_num)
-        representations = list(random.choice(formation.representations))
-
-        if len(representations) != cards_num:
-            raise ResourceError(
-                f"Tarot formation {formation.name} is configured incorrectly."
-            )
+        reading = await self.draw_ai_reading(formation)
 
         chain = []
-        for i in range(cards_num):
-            if formation.is_cut and i == cards_num - 1:
-                msg_header = MessageSegment.text(f"切牌「{representations[i]}」\n")
-            else:
-                msg_header = MessageSegment.text(
-                    f"第{i + 1}张牌「{representations[i]}」\n"
-                )
-
-            flag, msg_body = await self._get_text_and_image(theme, cards_info_list[i])
-            if not flag:
-                await matcher.finish(msg_body)
+        for index, card in enumerate(reading.cards):
+            msg = self._build_card_message(card)
 
             if isinstance(event, PrivateMessageEvent):
-                if i < cards_num - 1:
-                    await matcher.send(msg_header + msg_body)
+                if index < len(reading.cards) - 1:
+                    await matcher.send(msg)
                 else:
-                    await matcher.finish(msg_header + msg_body)
+                    await matcher.finish(msg)
             elif isinstance(event, GroupMessageEvent):
                 if self.is_chain_reply:
-                    chain = chain_reply(bot, chain, msg_header + msg_body)
+                    chain = chain_reply(bot, chain, msg)
                 else:
-                    if i < cards_num - 1:
-                        await matcher.send(msg_header + msg_body)
+                    if index < len(reading.cards) - 1:
+                        await matcher.send(msg)
                         await asyncio.sleep(1)
                     else:
-                        await matcher.finish(msg_header + msg_body)
+                        await matcher.finish(msg)
             else:
                 raise EventNotSupport
 
-        if self.is_chain_reply:
+        if self.is_chain_reply and isinstance(event, GroupMessageEvent):
             await bot.send_group_forward_msg(group_id=event.group_id, messages=chain)
 
-    async def onetime_divine(self) -> MessageSegment:
+    async def onetime_divine(self) -> Message | MessageSegment:
         """
         One-time divination.
         """
-        theme: str = pick_theme()
-        all_cards = self._load_cards()
-        card_info_list = self._random_cards(all_cards, theme)
-        flag, body = await self._get_text_and_image(theme, card_info_list[0])
-        return "回应是" + body if flag else body
+        theme = pick_theme()
+        card = (await self._draw_cards(theme, ("",), is_cut=False))[0]
+        return MessageSegment.text("回应是：\n") + self._build_card_body(card)
+
+    async def draw_ai_reading(self, formation: FormationSpec) -> TarotReading:
+        theme = pick_theme()
+        cards = await self._draw_cards(
+            theme,
+            tuple(random.choice(formation.representations)),
+            formation.is_cut,
+        )
+        if len(cards) != formation.cards_num:
+            raise ResourceError(
+                f"Tarot formation {formation.name} is configured incorrectly."
+            )
+        return TarotReading(
+            formation_name=formation.name,
+            formation_prompt=formation.ai_prompt,
+            theme=theme,
+            cards=tuple(cards),
+        )
 
     def switch_chain_reply(self, new_state: bool) -> None:
         """
@@ -494,52 +647,111 @@ class Tarot:
         cards_index: list[str] = random.sample(list(subset), num)
         return [subset[k] for k in cards_index]
 
-    async def _get_text_and_image(
+    async def _draw_cards(
+        self,
+        theme: str,
+        representations: tuple[str, ...],
+        is_cut: bool,
+    ) -> list[TarotCardDraw]:
+        all_cards = self._load_cards()
+        cards_info_list = self._random_cards(all_cards, theme, len(representations))
+        cards: list[TarotCardDraw] = []
+        for index, position_name in enumerate(representations):
+            label = (
+                "切牌"
+                if is_cut and index == len(representations) - 1
+                else f"第{index + 1}张牌"
+            )
+            cards.append(
+                await self._build_card_draw(
+                    theme=theme,
+                    card_info=cards_info_list[index],
+                    index=index + 1,
+                    label=label,
+                    position_name=position_name,
+                )
+            )
+        return cards
+
+    async def _build_card_draw(
         self,
         theme: str,
         card_info: dict[str, str | dict[str, str]],
-    ) -> tuple[bool, MessageSegment]:
-        """
-        Get a tarot image & text according to the "card_info"
-        """
-        _type: str = card_info.get("type")
-        _name: str = card_info.get("pic")
-        img_name: str = ""
-        img_dir: Path = tarot_config.tarot_path / theme / _type
+        index: int,
+        label: str,
+        position_name: str,
+    ) -> TarotCardDraw:
+        image = await self._get_card_image(theme, card_info)
+        meaning_data = card_info.get("meaning")
+        if not isinstance(meaning_data, dict):
+            raise ResourceError("塔罗牌牌义配置缺失")
 
-        for p in img_dir.glob(_name + ".*"):
-            img_name = p.name
+        orientation = "正位" if random.random() < 0.5 else "逆位"
+        meaning_key = "up" if orientation == "正位" else "down"
+        meaning = str(meaning_data.get(meaning_key, "")).strip()
 
-        if img_name == "":
+        if orientation == "逆位":
+            image = image.rotate(180)
+
+        return TarotCardDraw(
+            index=index,
+            label=label,
+            position_name=position_name,
+            card_name=str(card_info.get("name_cn", "")).strip(),
+            orientation=orientation,
+            meaning=meaning,
+            image_bytes=self._image_to_png_bytes(image),
+            thumbnail_bytes=self._build_thumbnail_bytes(image),
+        )
+
+    async def _get_card_image(
+        self,
+        theme: str,
+        card_info: dict[str, str | dict[str, str]],
+    ) -> Image.Image:
+        card_type = str(card_info.get("type", "")).strip()
+        image_name = str(card_info.get("pic", "")).strip()
+        local_name = ""
+        image_dir: Path = tarot_config.tarot_path / theme / card_type
+
+        for path in image_dir.glob(image_name + ".*"):
+            local_name = path.name
+
+        if not local_name:
             if theme in tarot_config.tarot_official_themes:
-                data = await get_tarot(theme, _type, _name)
+                data = await get_tarot(theme, card_type, image_name)
                 if data is None:
-                    return False, MessageSegment.text(
-                        "图片下载出错，请重试或将资源部署本地……"
-                    )
+                    raise ResourceError("图片下载出错，请重试或将资源部署本地。")
+                with Image.open(BytesIO(data)) as image:
+                    return image.copy()
 
-                img: Image.Image = Image.open(BytesIO(data))
-            else:
-                raise ResourceError(
-                    f"Tarot image {theme}/{_type}/{_name} doesn't exist! "
-                    f"Make sure the type {_type} is complete."
-                )
-        else:
-            img = Image.open(img_dir / img_name)
+            raise ResourceError(
+                f"Tarot image {theme}/{card_type}/{image_name} doesn't exist! "
+                f"Make sure the type {card_type} is complete."
+            )
 
-        name_cn: str = card_info.get("name_cn")
-        if random.random() < 0.5:
-            meaning: str = card_info.get("meaning").get("up")
-            msg = MessageSegment.text(f"「{name_cn}正位」「{meaning}」\n")
-        else:
-            meaning = card_info.get("meaning").get("down")
-            msg = MessageSegment.text(f"「{name_cn}逆位」「{meaning}」\n")
-            img = img.rotate(180)
+        with Image.open(image_dir / local_name) as image:
+            return image.copy()
 
-        buf = BytesIO()
-        img.save(buf, format="png")
+    def _image_to_png_bytes(self, image: Image.Image) -> bytes:
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        return buffer.getvalue()
 
-        return True, msg + MessageSegment.image(buf)
+    def _build_thumbnail_bytes(self, image: Image.Image) -> bytes:
+        thumbnail = image.copy()
+        thumbnail.thumbnail((220, 330))
+        return self._image_to_png_bytes(thumbnail)
+
+    def _build_card_body(self, card: TarotCardDraw) -> Message | MessageSegment:
+        return MessageSegment.text(
+            f"「{card.card_title}」「{card.meaning}」\n"
+        ) + MessageSegment.image(BytesIO(card.image_bytes))
+
+    def _build_card_message(self, card: TarotCardDraw) -> Message | MessageSegment:
+        return MessageSegment.text(f"{card.display_title}\n") + self._build_card_body(
+            card
+        )
 
 
 tarot_manager = Tarot()

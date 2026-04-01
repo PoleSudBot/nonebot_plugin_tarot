@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ data.title }}</title>
+    <link rel="stylesheet" href="./ai_result.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 装饰角落 -->
+        <div class="corner corner-tl"></div>
+        <div class="corner corner-tr"></div>
+        <div class="corner corner-bl"></div>
+        <div class="corner corner-br"></div>
+
+        <!-- 头部区 -->
+        <div class="header">
+            <h1 class="title">Tarot Reading</h1>
+            <div class="subtitle">✧ {{ data.formation }} ✧</div>
+        </div>
+
+        <div class="question-row" style="margin-bottom: 30px; text-align: center;">
+            <div class="question-label" style="margin-bottom: 8px;">本次提问</div>
+            <div class="question-text">{{ data.question }}</div>
+        </div>
+
+        <!-- 塔罗抽牌结果区 -->
+        <div class="section">
+            <div class="section-divider">
+                <span>牌面指引</span>
+            </div>
+            <div class="cards-layout">
+                {% for row in data.card_rows %}
+                <div class="cards-row">
+                    {% for card in row %}
+                    <div class="tarot-card">
+                        <div class="card-position">{{ card.label }}</div>
+                        <div class="card-image-box">
+                            <img src="{{ card.image_uri }}" alt="{{ card.card_title }}">
+                        </div>
+                        <div class="card-details">
+                            <div class="card-name">{{ card.card_title }}</div>
+                            <div class="card-meaning">{{ card.meaning }}</div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- 综合解读区 -->
+        <div class="section interpretation-section">
+            <div class="section-divider">
+                <span>综合解读</span>
+            </div>
+            <div class="interpretation-content markdown-body">
+                {{ data.interpretation | safe }}
+            </div>
+        </div>
+        
+        <div class="footer-decor">
+            ✧ Designed & Rendered by PoleSudBot ✧
+        </div>
+    </div>
+</body>
+</html>
