@@ -24,6 +24,7 @@ from .data_source import get_default_ai_formation, get_formation, tarot_manager
 from .models import TarotAIDailyUsage
 from .prompt_loader import build_system_prompt, build_user_prompt
 from .render import render_ai_result
+from .storage import save_ai_result_image
 from .types import (
     ParsedTarotCommand,
     TarotAIFailureCategory,
@@ -210,6 +211,27 @@ async def run_ai_divination(
             context=context,
             exc=exc,
         ) from exc
+
+    try:
+        saved_path = save_ai_result_image(
+            image_bytes,
+            user_id=context.user_id,
+            platform=context.platform,
+        )
+    except OSError as exc:
+        raise _wrap_internal_error(
+            "塔罗AI结果保存失败",
+            context=context,
+            exc=exc,
+        ) from exc
+
+    logger.info(
+        "塔罗AI结果已保存",
+        "塔罗AI",
+        session=context.user_id,
+        platform=context.platform,
+        target=str(saved_path),
+    )
 
     if not context.is_superuser:
         if context.cost_gold > 0:

@@ -1,5 +1,5 @@
 from nonebot import on_regex
-from nonebot.adapters.onebot.v11 import Bot
+from nonebot.adapters.onebot.v11 import Bot, Message, MessageSegment
 from nonebot.adapters.onebot.v11.event import GroupMessageEvent, MessageEvent
 from nonebot.matcher import Matcher
 from nonebot.permission import SUPERUSER
@@ -25,10 +25,15 @@ from .config import (
     DEFAULT_AI_DAILY_LIMIT,
     DEFAULT_AI_MODEL_NAME,
 )
-from .copywriting import pick_failure_message, pick_pending_message
+from .copywriting import (
+    pick_failure_message,
+    pick_locked_message,
+    pick_pending_message,
+)
 from .data_source import build_usage_text, get_formation, tarot_manager
 from .models import TarotAIDailyUsage
 from .render import render_unknown_formation
+from .runtime_state import acquire_ai_lock, release_ai_lock
 
 __tarot_version__ = "v1.0.0"
 __tarot_usages__ = build_usage_text()
@@ -92,6 +97,33 @@ async def _send_unknown_formation(query: str) -> None:
     await MessageUtils.build_message(image_bytes).finish()
 
 
+def _build_quoted_message(
+    event: MessageEvent,
+    message: Message | MessageSegment,
+) -> Message:
+    return MessageSegment.reply(event.message_id) + message
+
+
+async def _finish_reply_message(
+    matcher: Matcher,
+    event: MessageEvent,
+    message: str | bytes | Message | MessageSegment,
+) -> None:
+    if isinstance(message, Message | MessageSegment):
+        await matcher.finish(_build_quoted_message(event, message))
+        return
+    await MessageUtils.build_message(message).finish(reply_to=True)
+
+
+async def _send_unknown_formation_reply(
+    matcher: Matcher,
+    event: MessageEvent,
+    query: str,
+) -> None:
+    image_bytes = await render_unknown_formation(query)
+    await MessageUtils.build_message(image_bytes).finish(reply_to=True)
+
+
 async def _dispatch_tarot_command(
     bot: Bot,
     matcher: Matcher,
@@ -105,37 +137,53 @@ async def _dispatch_tarot_command(
         if parsed_command.formation_query and not get_formation(
             parsed_command.formation_query
         ):
-            await _send_unknown_formation(parsed_command.formation_query)
+            await _send_unknown_formation_reply(
+                matcher,
+                event,
+                parsed_command.formation_query,
+            )
             return
 
         try:
             context = await prepare_ai_request(bot, event, parsed_command)
         except TarotAIUserError as exc:
-            await matcher.finish(str(exc))
+            await _finish_reply_message(matcher, event, str(exc))
             return
 
-        await matcher.send(pick_pending_message())
+        acquired = await acquire_ai_lock(context.platform, context.user_id)
+        if not acquired:
+            await _finish_reply_message(matcher, event, pick_locked_message())
+            return
 
         try:
-            image_bytes = await run_ai_divination(
-                bot,
-                event,
-                parsed_command,
-                context=context,
-            )
-        except TarotAIUserError as exc:
-            if exc.category == "user_input":
-                await matcher.finish(str(exc))
-                return
-            await matcher.finish(pick_failure_message(exc.category))
-            return
+            await matcher.send(pick_pending_message())
 
-        await MessageUtils.build_message(image_bytes).finish()
+            try:
+                image_bytes = await run_ai_divination(
+                    bot,
+                    event,
+                    parsed_command,
+                    context=context,
+                )
+            except TarotAIUserError as exc:
+                if exc.category == "user_input":
+                    await _finish_reply_message(matcher, event, str(exc))
+                    return
+                await _finish_reply_message(
+                    matcher,
+                    event,
+                    pick_failure_message(exc.category),
+                )
+                return
+
+            await _finish_reply_message(matcher, event, image_bytes)
+        finally:
+            await release_ai_lock(context.platform, context.user_id)
         return
 
     if parsed_command.command in {"塔罗牌", "抽塔罗牌"}:
         msg = await tarot_manager.onetime_divine()
-        await matcher.finish(msg)
+        await _finish_reply_message(matcher, event, msg)
         return
 
     if parsed_command.formation_query and not get_formation(

@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Set, Union
 
@@ -15,11 +16,20 @@ except ModuleNotFoundError:
     import json
 
 
+PLUGIN_DIR = Path(__file__).parent
+LEGACY_RESOURCE_DIR = PLUGIN_DIR / "resource"
+LEGACY_TAROT_JSON_PATH = PLUGIN_DIR / "tarot.json"
+PLUGIN_DATA_DIR = Path("data") / "nonebot_plugin_tarot"
+PLUGIN_RESOURCE_DIR = PLUGIN_DATA_DIR / "resource"
+PLUGIN_TAROT_JSON_PATH = PLUGIN_DATA_DIR / "tarot.json"
+PLUGIN_AI_RESULT_DIR = PLUGIN_DATA_DIR / "ai_results"
+
+
 class PluginConfig(BaseModel, extra=Extra.ignore):
     '''
         Path of tarot images resource
     '''
-    tarot_path: Path = Path(__file__).parent / "resource"
+    tarot_path: Path = PLUGIN_RESOURCE_DIR
     chain_reply: bool = True
     tarot_auto_update: bool = False
     nickname: Set[str] = {"Bot"}
@@ -57,6 +67,33 @@ class ResourceError(Exception):
 
 class EventNotSupport(Exception):
     pass
+
+
+def _is_directory_empty(path: Path) -> bool:
+    return not path.exists() or not any(path.iterdir())
+
+
+def _uses_default_tarot_path() -> bool:
+    return tarot_config.tarot_path == PLUGIN_RESOURCE_DIR
+
+
+def ensure_plugin_data_layout() -> None:
+    PLUGIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PLUGIN_AI_RESULT_DIR.mkdir(parents=True, exist_ok=True)
+    tarot_config.tarot_path.mkdir(parents=True, exist_ok=True)
+
+    if (
+        _uses_default_tarot_path()
+        and LEGACY_RESOURCE_DIR.exists()
+        and _is_directory_empty(PLUGIN_RESOURCE_DIR)
+    ):
+        shutil.copytree(LEGACY_RESOURCE_DIR, PLUGIN_RESOURCE_DIR, dirs_exist_ok=True)
+        logger.info("Migrated tarot resource to data/nonebot_plugin_tarot/resource")
+
+    if not PLUGIN_TAROT_JSON_PATH.exists() and LEGACY_TAROT_JSON_PATH.exists():
+        PLUGIN_TAROT_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(LEGACY_TAROT_JSON_PATH, PLUGIN_TAROT_JSON_PATH)
+        logger.info("Migrated tarot.json to data/nonebot_plugin_tarot/tarot.json")
 
 
 def get_ai_model_name() -> str:
@@ -113,10 +150,9 @@ async def tarot_version_check() -> None:
     '''
         Get the latest version of tarot.json from repo
     '''
-    if not tarot_config.tarot_path.exists():
-        tarot_config.tarot_path.mkdir(parents=True, exist_ok=True)
+    ensure_plugin_data_layout()
 
-    tarot_json_path: Path = Path(__file__).parent / "tarot.json"
+    tarot_json_path = PLUGIN_TAROT_JSON_PATH
 
     cur_version: float = 0
     if tarot_json_path.exists():

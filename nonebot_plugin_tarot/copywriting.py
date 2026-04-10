@@ -7,6 +7,10 @@ AI_PENDING_MESSAGES: tuple[str, ...] = (
     "✧ 演算中.. ✧",
 )
 
+AI_LOCKED_MESSAGES: tuple[str, ...] = (
+    "✧ 上一卦仍在共鸣中.. ✧",
+)
+
 AI_FAILURE_MESSAGES_UPSTREAM: tuple[str, ...] = (
     "✧ 星象干扰，共鸣中断.. ✧",
     "✧ 灵子浓度不足，演算超时.. ✧",
@@ -29,6 +33,10 @@ AI_FAILURE_MESSAGES_INTERNAL: tuple[str, ...] = (
 
 def pick_pending_message() -> str:
     return random.choice(AI_PENDING_MESSAGES)
+
+
+def pick_locked_message() -> str:
+    return random.choice(AI_LOCKED_MESSAGES)
 
 
 def pick_failure_message(category: TarotAIFailureCategory) -> str:

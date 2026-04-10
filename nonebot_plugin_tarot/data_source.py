@@ -13,7 +13,17 @@ from nonebot.adapters.onebot.v11.event import (
 from nonebot.matcher import Matcher
 from PIL import Image
 
-from .config import EventNotSupport, ResourceError, get_tarot, tarot_config
+from zhenxun.utils.platform import PlatformUtils
+
+from .config import (
+    EventNotSupport,
+    PLUGIN_TAROT_JSON_PATH,
+    ResourceError,
+    ensure_plugin_data_layout,
+    get_tarot,
+    tarot_config,
+)
+from .storage import save_tarot_resource
 from .types import TarotCardDraw, TarotReading
 
 try:
@@ -365,6 +375,13 @@ FORMATION_SPECS: tuple[FormationSpec, ...] = (
 )
 
 DEFAULT_AI_FORMATION_NAME = "圣三角牌阵"
+IMAGE_FORMAT_EXTENSION_MAP = {
+    "JPEG": "jpg",
+    "JPG": "jpg",
+    "PNG": "png",
+    "WEBP": "webp",
+    "GIF": "gif",
+}
 
 
 def normalize_formation_name(name: str) -> str:
@@ -482,12 +499,26 @@ def chain_reply(
     chain: list[dict[str, str | dict[str, str | Message | MessageSegment]]],
     msg: Message | MessageSegment,
 ) -> list[dict[str, str | dict[str, str | Message | MessageSegment]]]:
-    name = next(iter(tarot_config.nickname), "Tarot")
+    return _append_forward_node(
+        chain,
+        msg,
+        uin=bot.self_id,
+        name=next(iter(tarot_config.nickname), "Tarot"),
+    )
+
+
+def _append_forward_node(
+    chain: list[dict[str, str | dict[str, str | Message | MessageSegment]]],
+    msg: Message | MessageSegment,
+    *,
+    uin: str,
+    name: str,
+) -> list[dict[str, str | dict[str, str | Message | MessageSegment]]]:
     data = {
         "type": "node",
         "data": {
             "name": name,
-            "uin": bot.self_id,
+            "uin": uin,
             "content": msg,
         },
     }
@@ -499,6 +530,7 @@ def pick_theme() -> str:
     """
     Random choose a theme from the union of local & official themes
     """
+    ensure_plugin_data_layout()
     sub_themes_dir: list[str] = [
         f.name for f in tarot_config.tarot_path.iterdir() if f.is_dir()
     ]
@@ -515,6 +547,7 @@ def pick_sub_types(theme: str) -> list[str]:
     Random choose a sub type of the "theme".
     If it is in official themes, all the sub types are available.
     """
+    ensure_plugin_data_layout()
     all_sub_types: list[str] = [
         "MajorArcana",
         "Cups",
@@ -538,9 +571,14 @@ def pick_sub_types(theme: str) -> list[str]:
     return sub_types
 
 
+def _detect_image_extension(image_format: str | None) -> str:
+    normalized = (image_format or "").upper().strip()
+    return IMAGE_FORMAT_EXTENSION_MAP.get(normalized, normalized.lower() or "png")
+
+
 class Tarot:
     def __init__(self):
-        self.tarot_json: Path = Path(__file__).parent / "tarot.json"
+        self.tarot_json = PLUGIN_TAROT_JSON_PATH
         self.is_chain_reply: bool = tarot_config.chain_reply
 
     async def divine(
@@ -560,10 +598,20 @@ class Tarot:
         else:
             formation = random.choice(FORMATION_SPECS)
 
-        await matcher.send(f"启用{formation.name}，正在洗牌中")
         reading = await self.draw_ai_reading(formation)
 
-        chain = []
+        if isinstance(event, GroupMessageEvent) and self.is_chain_reply:
+            chain = await self._build_divine_forward_chain(
+                bot,
+                event,
+                formation.name,
+                reading,
+            )
+            await bot.send_group_forward_msg(group_id=event.group_id, messages=chain)
+            return
+
+        await matcher.send(f"启用{formation.name}，正在洗牌中")
+
         for index, card in enumerate(reading.cards):
             msg = self._build_card_message(card)
 
@@ -573,19 +621,59 @@ class Tarot:
                 else:
                     await matcher.finish(msg)
             elif isinstance(event, GroupMessageEvent):
-                if self.is_chain_reply:
-                    chain = chain_reply(bot, chain, msg)
+                if index < len(reading.cards) - 1:
+                    await matcher.send(msg)
+                    await asyncio.sleep(1)
                 else:
-                    if index < len(reading.cards) - 1:
-                        await matcher.send(msg)
-                        await asyncio.sleep(1)
-                    else:
-                        await matcher.finish(msg)
+                    await matcher.finish(msg)
             else:
                 raise EventNotSupport
 
-        if self.is_chain_reply and isinstance(event, GroupMessageEvent):
-            await bot.send_group_forward_msg(group_id=event.group_id, messages=chain)
+    async def _build_divine_forward_chain(
+        self,
+        bot: Bot,
+        event: GroupMessageEvent,
+        formation_name: str,
+        reading: TarotReading,
+    ) -> list[dict[str, str | dict[str, str | Message | MessageSegment]]]:
+        chain: list[dict[str, str | dict[str, str | Message | MessageSegment]]] = []
+        trigger_user_id = event.get_user_id()
+        trigger_name = await self._get_trigger_user_name(bot, event)
+
+        _append_forward_node(
+            chain,
+            event.get_message(),
+            uin=trigger_user_id,
+            name=trigger_name,
+        )
+        chain_reply(
+            bot,
+            chain,
+            MessageSegment.text(f"启用{formation_name}，正在洗牌中"),
+        )
+
+        for card in reading.cards:
+            chain_reply(bot, chain, self._build_card_message(card))
+        return chain
+
+    async def _get_trigger_user_name(
+        self,
+        bot: Bot,
+        event: GroupMessageEvent,
+    ) -> str:
+        user_id = event.get_user_id()
+        user = await PlatformUtils.get_user(
+            bot,
+            user_id,
+            group_id=str(event.group_id),
+        )
+        if user:
+            return user.card or user.name or user_id
+
+        sender = getattr(event, "sender", None)
+        card = getattr(sender, "card", None) if sender else None
+        nickname = getattr(sender, "nickname", None) if sender else None
+        return card or nickname or user_id
 
     async def onetime_divine(self) -> Message | MessageSegment:
         """
@@ -622,6 +710,7 @@ class Tarot:
     def _load_cards(
         self,
     ) -> dict[str, dict[str, dict[str, str | dict[str, str]]]]:
+        ensure_plugin_data_layout()
         with self.tarot_json.open("r", encoding="utf-8") as f:
             content = json.load(f)
         return content.get("cards", {})
@@ -722,8 +811,27 @@ class Tarot:
                 data = await get_tarot(theme, card_type, image_name)
                 if data is None:
                     raise ResourceError("图片下载出错，请重试或将资源部署本地。")
-                with Image.open(BytesIO(data)) as image:
-                    return image.copy()
+                try:
+                    with Image.open(BytesIO(data)) as image:
+                        copied_image = image.copy()
+                        extension = _detect_image_extension(image.format)
+                except OSError as exc:
+                    raise ResourceError("塔罗牌图片资源损坏或格式无法识别。") from exc
+
+                try:
+                    save_tarot_resource(
+                        data,
+                        theme=theme,
+                        card_type=card_type,
+                        image_name=image_name,
+                        extension=extension,
+                    )
+                except OSError as exc:
+                    raise ResourceError(
+                        "塔罗牌图片缓存失败，请检查 data 目录权限。"
+                    ) from exc
+
+                return copied_image
 
             raise ResourceError(
                 f"Tarot image {theme}/{card_type}/{image_name} doesn't exist! "
